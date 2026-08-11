@@ -1,0 +1,414 @@
+---
+title: "Build and deploy a stroke prediction model using R"
+date: "`r Sys.Date()`"
+output: html_document
+author: "Tushar Kumar"
+---
+
+# About Data Analysis Report
+
+This RMarkdown file contains the report of the data analysis done for the project on building and deploying a stroke prediction model in R. It contains analysis such as data exploration, summary statistics and building the prediction models. The final report was completed on `r date()`.
+
+**Data Description:**
+
+According to the World Health Organization (WHO) stroke is the 2nd leading cause of death globally, responsible for approximately 11% of total deaths.
+
+This data set is used to predict whether a patient is likely to get stroke based on the input parameters like gender, age, various diseases, and smoking status. Each row in the data provides relevant information about the patient.
+
+# Task One: Import data and data preprocessing
+
+## Load data and install packages
+
+```{r}
+#load the Library
+library(tidyverse) # Loads readr,  dplyr, tidyr,stringr, etc.
+library(readxl)    # Needs to be loaded separately for Excel
+library(dplyr)     #important to check unique string
+library(janitor)   #help clean the column name into camel font
+library(fastDummies)
+
+raw_data <- read_csv("D:/Stroke_prediction/stroke-data.csv")
+#glimpse shows data , its type and examples 
+clean_data=raw_data
+glimpse(clean_data)
+#convert the column name into camel font . improve code readibility
+
+clean_data <- clean_data %>%
+  clean_names()
+
+#summary help to find null, unique and statistical values
+summary(clean_data)
+
+```
+
+## Describe and explore the data
+
+```{r}
+#Check the N/A value as it was not found in na values
+sum(clean_data$bmi=="N/A")
+
+
+clean_data %>%
+  count(bmi,sort=TRUE)
+
+
+# Assuming your dataframe is 'my_data' and the column is 'bmi'
+clean_data <- clean_data %>%
+  mutate(
+    # na_if() turns the text "N/A" into a real R missing value (NA)
+    # as.numeric() forces the column back to numbers so we can do math on it
+    bmi = as.numeric(na_if(bmi, "N/A"))
+  )
+
+
+#replace this with mean as the demographic value like bmi have normal distribution
+clean_data <- clean_data %>%
+  mutate(
+    bmi = replace_na(bmi,mean(bmi,na.rm=TRUE))
+  )
+
+hist(clean_data$bmi)
+
+hist(clean_data$bmi, 
+     main = "Distribution of BMI",  # Adds a title
+     xlab = "BMI",                  # Labels the X-axis
+     col = "lightblue")
+
+#it is found that the gender , residence , smoking type , work type and marriage consist of string . 
+#for data profiling it is important to convert them into integer incoding.
+clean_data %>%
+  count(gender,sort=TRUE) #shows unique string and frequency
+
+clean_data %>%
+  count(residence_type,sort=TRUE)
+
+clean_data %>%
+  count(work_type,sort=TRUE)
+
+clean_data %>%
+  count(ever_married,sort=TRUE)
+
+clean_data %>%
+  count(smoking_status,sort=TRUE)
+
+#change the row whose gender is other as Male
+
+clean_data<-clean_data %>%
+  mutate(gender=case_when(gender=="Other"~"Male",TRUE~gender))
+
+#According to research quiting smoking help reduce the stroke risk by 34% . it should be numbered less than unknown
+#encoding string column as research shows quiting is better than not availability about it .
+
+my_data=clean_data
+
+
+my_data <- my_data %>%
+  dummy_cols(select_columns = "work_type", 
+             remove_first_dummy = FALSE) # This drops the first alphabetical category
+
+my_data <- my_data %>%
+  dummy_cols(select_columns = "residence_type", 
+             remove_first_dummy = FALSE)
+
+my_data <- my_data %>%
+  dummy_cols(select_columns = "smoking_status", 
+             remove_first_dummy = FALSE) 
+my_data <- my_data %>%
+  
+  
+  mutate(marriage_encoded = if_else(ever_married == "Yes", 1, 0))
+
+my_data <- my_data %>%
+  
+  
+  mutate(marriage_encoded = if_else(ever_married == "Yes", 1, 0))
+
+
+
+# Check if gender matters when you also factor in smoking
+my_data %>%
+  group_by(gender, smoking_status) %>%
+  summarise(
+    total_people = n(),
+    stroke_rate = (sum(stroke == 1, na.rm = TRUE) / n()) * 100
+  )
+
+#one hot encoding as both gender have specific category that have fluctuation in data
+my_data <- my_data %>%
+  dummy_cols(select_columns = "gender", 
+             remove_first_dummy = TRUE) 
+
+summary(my_data)
+
+# 1. Convert the stroke column to a factor with meaningful labels
+my_data <- my_data %>%
+  mutate(stroke = factor(stroke, 
+                         levels = c(0, 1), 
+                         labels = c("No", "Yes")))
+
+
+
+
+
+  
+
+
+
+
+
+```
+
+# Task Two: Build prediction models
+
+```{r}
+#after addressing the data profiling by converting null and encoding the string 
+#Now we will procced to build the prediction models . By first spliting the data into 80-20 for train and split
+library(tidymodels)
+set.seed(123)
+
+# strokes vs non-strokes in both sets.
+data_split <- initial_split(my_data, prop = 0.8, strata = stroke)
+
+train_data <- training(data_split)
+test_data  <- testing(data_split)
+
+# 1. Build the recipe using the training data
+stroke_recipe <- recipe(stroke ~ ., data = train_data) %>%
+  
+  # Step 1: Explicitly remove the original raw text/string columns 
+  step_rm(id,gender, work_type, ever_married, smoking_status,residence_type) %>%
+  
+  # Step 2: Handle any missing numeric values 
+  step_impute_mean(all_numeric_predictors()) %>%
+  
+  # Step 3: Normalize all numeric and encoded columns so they are on the same scale
+  step_normalize(all_numeric_predictors())
+
+
+
+#To improve the accuracy of model. i will apply three model and keep the best model
+
+#Linear regression model
+log_reg_model <- logistic_reg() %>%
+  set_engine("glm") %>%
+  set_mode("classification")
+
+# 2. Create the workflow object
+stroke_workflow <- workflow() %>%
+  add_recipe(stroke_recipe) %>%  #  recipe with step_normalize()
+  add_model(log_reg_model)       # The model just defined
+
+stroke_fit <- stroke_workflow %>%
+  fit(data = train_data)
+
+#shows the coefficient for the regression model
+stroke_fit
+
+
+#random forest model
+rf_model <- rand_forest(trees = 500) %>%
+  set_engine("ranger", importance = "impurity") %>%
+  set_mode("classification")
+
+# 2. Create the workflow
+rf_workflow <- workflow() %>%
+  add_recipe(stroke_recipe) %>% # Reusing your existing recipe!
+  add_model(rf_model)
+
+# 3. Train the model
+rf_fit <- rf_workflow %>%
+  fit(data = train_data)
+
+# Print a quick summary
+rf_fit
+
+# Neural Network Model
+# hidden_units = number of nodes in the hidden layer
+# penalty = regularization to prevent overfitting
+nn_model <- mlp(hidden_units = 5, penalty = 0.01) %>%
+  set_engine("nnet") %>%
+  set_mode("classification")
+
+# 2. Create the workflow
+nn_workflow <- workflow() %>%
+  add_recipe(stroke_recipe) %>%
+  add_model(nn_model)
+
+# 3. Train the model
+# (This might take a few seconds depending on your machine)
+nn_fit <- nn_workflow %>%
+  fit(data = train_data)
+
+# Print a quick summary
+nn_fit
+
+#Now is the best time to test the model predictibility and determine there accuracy and adapt to the best model
+
+#let us start with logistical regression model
+#renaming help to remember the predicted model
+log_reg_preds <- predict(stroke_fit, new_data = test_data) %>%
+  rename(pred_log_reg = .pred_class)
+
+# 2. Predict using Random Forest
+rf_preds <- predict(rf_fit, new_data = test_data) %>%
+  rename(pred_rf = .pred_class)
+
+# 3. Predict using Neural Network
+nn_preds <- predict(nn_fit, new_data = test_data) %>%
+  rename(pred_nn = .pred_class)
+
+```
+
+# Task Three: Evaluate and select prediction models
+
+```{r}
+#with all these model come the challenge to choose the one
+#statistics offer the model to choose one 
+#i am going to check the data on the basis of different #metrics including accuracy, recall, precision specificity
+
+# Create the results dataframe
+results_df <- test_data %>%
+  select(actual_stroke = stroke) %>%
+  bind_cols(log_reg_preds, rf_preds, nn_preds)
+
+# Now check that this object exists:
+head(results_df)
+checking_metrics <- metric_set(accuracy, sens, spec, precision)
+
+#let me start with logistic regression
+checking_metrics(results_df, truth = actual_stroke, estimate = pred_log_reg)
+
+#Random forest
+checking_metrics(results_df, truth = actual_stroke, estimate = pred_rf)
+
+#neural network
+checking_metrics(results_df, truth = actual_stroke, estimate = pred_nn)
+
+```
+
+# Task Four: Deploy the prediction model
+
+```{r}
+# 1. SETUP
+library(shiny)
+library(tidymodels)
+library(dplyr)
+
+# Load the trained model (Ensure lg_model.rds is in the same folder as app.R)
+lg_model <- readRDS("lg_model.rds")
+
+# 2. USER INTERFACE (UI)
+ui <- fluidPage(
+  titlePanel("Stroke Risk Prediction Dashboard"),
+  
+  sidebarLayout(
+    sidebarPanel(
+      h4("Patient Demographics"),
+      sliderInput("age", "Age:", min = 0, max = 100, value = 50),
+      selectInput("gender", "Gender:", choices = c("Male", "Female")),
+      selectInput("ever_married", "Ever Married:", choices = c("Yes", "No")),
+      
+      h4("Health Metrics"),
+      numericInput("bmi", "BMI (Body Mass Index):", value = 28.5, min = 10, max = 80),
+      numericInput("avg_glucose_level", "Average Glucose Level:", value = 105.0, min = 50, max = 300),
+      selectInput("hypertension", "Hypertension:", choices = c("No" = 0, "Yes" = 1)),
+      selectInput("heart_disease", "Heart Disease:", choices = c("No" = 0, "Yes" = 1)),
+      
+      h4("Lifestyle & Background"),
+      selectInput("smoking_status", "Smoking Status:", 
+                  choices = c("never smoked", "formerly smoked", "smokes", "Unknown")),
+      selectInput("work_type", "Work Type:", 
+                  choices = c("Private", "Self-employed", "Govt_job", "children", "Never_worked")),
+      selectInput("residence_type", "Residence Type:", 
+                  choices = c("Urban", "Rural")),
+      
+      br(),
+      actionButton("predict_btn", "Calculate Risk", class = "btn-primary", width = "100%")
+    ),
+    
+    mainPanel(
+      h3("Prediction Results"),
+      hr(),
+      h4(textOutput("prediction_text")),
+      h4(textOutput("probability_text")),
+      br(),
+      p("Note: This is an analytical tool based on machine learning, not medical advice.")
+    )
+  )
+)
+
+# 3. SERVER LOGIC
+server <- function(input, output) {
+  
+  prediction_results <- eventReactive(input$predict_btn, {
+    
+    # Translate UI inputs into the EXACT dataframe the model was trained on
+    # check.names = FALSE is critical here so R doesn't remove the spaces in the smoking status column names!
+    new_patient <- data.frame(
+      # Raw Numeric Inputs
+      age = input$age,
+      bmi = input$bmi,
+      avg_glucose_level = input$avg_glucose_level,
+      hypertension = as.numeric(input$hypertension),
+      heart_disease = as.numeric(input$heart_disease),
+      
+      # Encoded Marriage & Gender
+      marriage_encoded = ifelse(input$ever_married == "Yes", 1, 0),
+      gender_Male = ifelse(input$gender == "Male", 1, 0),
+      
+      # Encoded Work Type
+      work_type_children = ifelse(input$work_type == "children", 1, 0),
+      work_type_Govt_job = ifelse(input$work_type == "Govt_job", 1, 0),
+      work_type_Never_worked = ifelse(input$work_type == "Never_worked", 1, 0),
+      work_type_Private = ifelse(input$work_type == "Private", 1, 0),
+      `work_type_Self-employed` = ifelse(input$work_type == "Self-employed", 1, 0),
+      
+      # Encoded Residence Type
+      residence_type_Rural = ifelse(input$residence_type == "Rural", 1, 0),
+      residence_type_Urban = ifelse(input$residence_type == "Urban", 1, 0),
+      
+      # Encoded Smoking Status
+      `smoking_status_formerly smoked` = ifelse(input$smoking_status == "formerly smoked", 1, 0),
+      `smoking_status_never smoked` = ifelse(input$smoking_status == "never smoked", 1, 0),
+      smoking_status_smokes = ifelse(input$smoking_status == "smokes", 1, 0),
+      smoking_status_Unknown = ifelse(input$smoking_status == "Unknown", 1, 0),
+      
+      # --- CRITICAL FIX ---
+      # Your recipe has step_rm(id, gender, work_type, ever_married, smoking_status, residence_type)
+      # Therefore, we MUST include these original columns so the recipe has something to delete!
+      id = 99999,
+      gender = input$gender,
+      ever_married = input$ever_married,
+      work_type = input$work_type,
+      residence_type = input$residence_type,
+      smoking_status = input$smoking_status,
+      
+      check.names = FALSE 
+    )
+    
+    # Get predictions
+    pred_class <- predict(lg_model, new_data = new_patient)$.pred_class
+    pred_prob <- predict(lg_model, new_data = new_patient, type = "prob")
+    
+    list(class = pred_class, prob = pred_prob$.pred_Yes)
+  })
+  
+  # 4. OUTPUT TO UI
+  output$prediction_text <- renderText({
+    paste("Model Prediction:", prediction_results()$class)
+  })
+  
+  output$probability_text <- renderText({
+    prob_pct <- round(prediction_results()$prob * 100, 2)
+    paste("Probability of Stroke:", prob_pct, "%")
+  })
+}
+
+# 5. RUN THE APP
+shinyApp(ui = ui, server = server)
+
+```
+
+# Task Five: Findings and Conclusions
+
+Core Analytical InsightsStroke is a highly complex medical event driven by multifaceted risk factors. Developing a robust predictive model required rigorous exploratory data analysis (EDA) and visualization to uncover underlying correlations. The analysis clearly identified that clinical metrics—specifically hypertension, existing heart disease, and average glucose levels—are the strongest primary predictors of stroke risk. Furthermore, these physiological factors are heavily augmented by lifestyle elements, including work type and smoking status.Data Preprocessing & Feature EngineeringTo ensure the models could effectively interpret this complexity, the raw data required a highly structured preprocessing pipeline:Data Cleaning: Column names were standardized for programmatic consistency. The bmi feature contained missing values recorded as "N/A" character strings, which were converted to true nulls and imputed using the statistical mean to preserve the normal distribution. Additionally, extreme minority classes (such as a single "Other" entry in the gender column) were addressed to prevent algorithm errors.Encoding: Categorical variables (residence type, marital status, smoking history, and work type) were converted using dummy encoding. While aggregate demographic features like gender showed minimal variance on the surface, interaction analysis revealed deeper subgroup significance, making categorical encoding a critical step.Target Variable: The dependent variable (stroke) was transformed into a binary Factor (Yes/No) to properly set up the classification models.Model Evaluation & PerformanceWith a fully normalized and encoded dataset, three distinct predictive architectures were trained and evaluated: Logistic Regression, a Random Forest, and a Neural Network (Multi-Layer Perceptron).Upon evaluating the testing data using standard clinical metrics, Logistic Regression achieved the best overall performance—scoring the highest in both Accuracy and Recall (Sensitivity).Random Forest performed adequately as a runner-up, while the Neural Network showed that simpler models often perform better on structured tabular data.Future Scope & DeploymentWhile the current Logistic Regression model demonstrates strong predictive capabilities, further hyperparameter tuning and alternative imputation strategies for missing fields could theoretically increase the model's sensitivity.As a final step in the project lifecycle, this predictive algorithm is being deployed from the local R environment into a live, interactive web dashboard. This transitions the project from a static analysis into a real-world, customer-facing application.
